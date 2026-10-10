@@ -1,0 +1,77 @@
+services:
+  api:
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-scanner}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-scanner}
+      SCANNER_API_TOKENS: ${SCANNER_API_TOKENS:?Set SCANNER_API_TOKENS to a JSON token-to-user map}
+      SCANNER_PROXY_KEY: ${SCANNER_PROXY_KEY:?Set SCANNER_PROXY_KEY to a strong random value}
+      REQUIRE_DOMAIN_VERIFICATION: "true"
+    networks:
+      - app_internal
+      - scanner_control
+      - database_internal
+    depends_on:
+      egress-proxy:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  worker:
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-scanner}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-scanner}
+      SCANNER_API_TOKENS: ${SCANNER_API_TOKENS:?Set SCANNER_API_TOKENS to a JSON token-to-user map}
+      SCANNER_PROXY_KEY: ${SCANNER_PROXY_KEY:?Set SCANNER_PROXY_KEY to a strong random value}
+    networks:
+      - app_internal
+      - scanner_control
+      - database_internal
+    depends_on:
+      egress-proxy:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./frontend
+      target: production
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,nodev
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 32
+    mem_limit: 128m
+    cpus: 0.25
+
+  egress-proxy:
+    environment:
+      SCANNER_PROXY_KEY: ${SCANNER_PROXY_KEY:?Set SCANNER_PROXY_KEY to a strong random value}
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-scanner}
+      POSTGRES_USER: ${POSTGRES_USER:-scanner}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - database_internal
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 0.75
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+
+volumes:
+  postgres_data:
+
+networks:
+  database_internal:
+    internal: true
