@@ -1,0 +1,128 @@
+name: safe-website-scanner
+
+services:
+  api:
+    build:
+      context: ./backend
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
+    environment:
+      APP_ENV: development
+      DATABASE_URL: sqlite:////data/scanner.db
+      SCANNER_API_TOKENS: ${SCANNER_API_TOKENS:-}
+      SCANNER_PROXY_URL: http://egress-proxy:3128
+      SCANNER_PROXY_KEY: ${SCANNER_PROXY_KEY:-local-proxy-key-change-this-before-use-0123456789abcdef}
+      REQUIRE_DOMAIN_VERIFICATION: ${REQUIRE_DOMAIN_VERIFICATION:-false}
+      ZAP_BASELINE_ENABLED: ${ZAP_BASELINE_ENABLED:-false}
+      ZAP_BASELINE_COMMAND: ${ZAP_BASELINE_COMMAND:-zap-baseline.py}
+      ZAP_BASELINE_TIMEOUT_SECONDS: ${ZAP_BASELINE_TIMEOUT_SECONDS:-75}
+      SCAN_TIMEOUT_SECONDS: ${SCAN_TIMEOUT_SECONDS:-180}
+      MAX_RESPONSE_BYTES: ${MAX_RESPONSE_BYTES:-524288}
+    volumes:
+      - scan_data:/data
+    depends_on:
+      egress-proxy:
+        condition: service_healthy
+    networks:
+      - app_internal
+      - scanner_control
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,nodev
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 96
+    mem_limit: 384m
+    cpus: 0.75
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2)"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+
+  worker:
+    build:
+      context: ./backend
+    command: ["python", "-m", "app.worker"]
+    environment:
+      APP_ENV: development
+      DATABASE_URL: sqlite:////data/scanner.db
+      SCANNER_API_TOKENS: ${SCANNER_API_TOKENS:-}
+      SCANNER_PROXY_URL: http://egress-proxy:3128
+      SCANNER_PROXY_KEY: ${SCANNER_PROXY_KEY:-local-proxy-key-change-this-before-use-0123456789abcdef}
+      ZAP_BASELINE_ENABLED: ${ZAP_BASELINE_ENABLED:-false}
+      ZAP_BASELINE_COMMAND: ${ZAP_BASELINE_COMMAND:-zap-baseline.py}
+      ZAP_BASELINE_TIMEOUT_SECONDS: ${ZAP_BASELINE_TIMEOUT_SECONDS:-75}
+      SCAN_TIMEOUT_SECONDS: ${SCAN_TIMEOUT_SECONDS:-180}
+      MAX_RESPONSE_BYTES: ${MAX_RESPONSE_BYTES:-524288}
+      WORKER_POLL_SECONDS: 1
+    volumes:
+      - scan_data:/data
+    depends_on:
+      egress-proxy:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    networks:
+      - app_internal
+      - scanner_control
+    read_only: true
+    tmpfs:
+      - /tmp:size=48m,noexec,nosuid,nodev
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 64
+    mem_limit: 768m
+    cpus: 0.75
+    restart: unless-stopped
+
+  egress-proxy:
+    build:
+      context: ./backend
+    command: ["python", "-m", "app.egress_proxy"]
+    environment:
+      SCANNER_PROXY_KEY: ${SCANNER_PROXY_KEY:-local-proxy-key-change-this-before-use-0123456789abcdef}
+      SCANNER_PROXY_BIND: 0.0.0.0
+      SCANNER_PROXY_PORT: 3128
+    networks:
+      - scanner_control
+      - scanner_egress
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid,nodev
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 40
+    mem_limit: 128m
+    cpus: 0.25
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.create_connection(('127.0.0.1',3128),2); s.close()"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  web:
+    build:
+      context: ./frontend
+      target: development
+    environment:
+      VITE_API_PROXY_TARGET: http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${WEB_PORT:-5173}:5173"
+    networks:
+      - app_internal
+    restart: unless-stopped
+
+volumes:
+  scan_data:
+
+networks:
+  app_internal:
+    internal: true
+  scanner_control:
+    internal: true
+  scanner_egress: {}
